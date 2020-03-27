@@ -1,18 +1,28 @@
 import numpy as np
-import cv2 as cv
 from matplotlib import pyplot as plt
 from tkinter import Tk, Button, Label, Frame, Canvas, NW, Scrollbar, BOTTOM, RIGHT, X, Y, HORIZONTAL, VERTICAL, BOTH, LEFT, BOTTOM, RIGHT, LEFT, ALL, CURRENT, ACTIVE, NORMAL
 from PIL import Image, ImageTk
 import sys
-from image_helpers import get_final_letter, select_image, get_viewable_image, get_viewable_letter_contours_image, generate_output_from_canvas, segment_image, get_letter_contours
+from image_helpers import debug_draw, get_image_from_file, select_image_file, get_viewable_image, toolbar_sized, get_snakes, generate_output_from_canvas, segment_image, get_letter_contours
 
+
+class SegmentedImage:
+  def __init__(self, original, segmented):
+    self.original = original
+    self.segmented = segmented
+
+class ContouredImage:
+  def __init__(self, original, contours):
+    self.original = original
+    self.contours = contours
 
 class Application(Frame):
     def __init__(self, master=None):
         super().__init__(master)
         self.master = master
         self.source_image = None
-        self.selected_letter_to_add = None
+        self.selected_letter = None
+        self.selected_letter_snake = None
 
         # GUI setup
         self.pack()
@@ -27,15 +37,11 @@ class Application(Frame):
 
         if self.debug:
             print('DEBUG MODE IS ON')
-            cv.namedWindow("DEBUG", cv.WINDOW_AUTOSIZE)
-            cv.namedWindow("DEBUG_2", cv.WINDOW_AUTOSIZE)
-            source_image = cv.imread('resources/test_text.tif')
-            charactar_image = cv.imread('resources/beit-test.tif')
+            source_image = get_image_from_file('resources/test_text.tif')
+            charactar_image = get_image_from_file('resources/beit-test.tif')
             self.set_source_image(source_image)
-            char, cont = get_letter_contours(charactar_image)
-            self.add_selectable_letter_image(char, cont)
-
-            # cv.imshow("DEBUG", self.modified_source_image)
+            contoured_image = get_letter_contours(charactar_image)
+            self.add_selectable_letter_image(contoured_image)
 
     def create_widgets(self):
         self.input_select = Button(
@@ -70,24 +76,24 @@ class Application(Frame):
         # scale(self, xscale, yscale, xoffset, yoffset)
 
     def pick_source_image(self):
-        selected = select_image()
+        selected = select_image_file()
         if selected is None:
             return
         self.set_source_image(selected)
 
     def pick_selectable_letter_image(self):
-        selected = select_image()
+        selected = select_image_file()
         if selected is None:
             return
-        char, cont = get_letter_contours(selected)
-        self.add_selectable_letter_image(char, cont)
+        contoured_image = get_letter_contours(selected)
+        self.add_selectable_letter_image(contoured_image)
 
     def set_source_image(self, source):
-        self.source_image = source
-        self.modified_source_image = self.modify_image(source.copy())
+        self.source_image = SegmentedImage(
+            source, segment_image(source))
 
         # update the image panels
-        image = get_viewable_image(self.source_image)
+        image = get_viewable_image(self.source_image.original)
 
         # Clear current canvas display
         self.output_image_view.delete(ALL)
@@ -95,67 +101,67 @@ class Application(Frame):
         # garbage collector, please don't collect me
         self.output_image_view.tkimage = image
         self.output_image_view.letters = {}
-        self.output_image_view.letters_source = {}
+        # self.output_image_view.letters_source = {}
 
         # Insert the image to the canvas
         self.output_image_view.create_image(
             0, 0, image=image, anchor=NW)
 
         # Scroll Size Setup
-        height, width = self.source_image.shape[:2]
+        height, width = self.source_image.original.shape[:2]
         self.output_image_view.configure(scrollregion=(
             0, 0, width, height))
 
-    def add_selectable_letter_image(self, source, contours):
-        resized = cv.resize(source, (100, 100), interpolation=cv.INTER_AREA)
-        image = get_viewable_letter_contours_image(source)
+    def add_selectable_letter_image(self, contoured_image):
+        resized = toolbar_sized(contoured_image.original)
+        resized = get_viewable_image(resized)
 
-        cv.imshow("DEBUG", source)
-        self.letter_selection_frame.letters.append(image)
+        self.letter_selection_frame.letters.append(resized)
 
         image_instance = Label(self.letter_selection_frame,
-                               image=image, background='grey')
+                               image=resized, background='grey')
         image_instance.pack(side='top', fill='x')
 
         # Selection binding
         image_instance.bind(
-            "<Button-1>", lambda event: self.select_letter_image(image_instance, source, contours))
+            "<Button-1>", lambda event: self.select_letter_image(image_instance, contoured_image))
 
     def add_letter_image(self, source, top_left):
         # update the image panels
-        image = get_viewable_letter_contours_image(source)
-        top, left = top_left
+        image = get_viewable_image(source)
+        left, top = top_left
         # Insert the image to the canvas
         instance = self.output_image_view.create_image(
             left, top, image=image, anchor=NW, tags='letter')
 
         # garbage collector, please don't collect me
         self.output_image_view.letters[instance] = image
-        self.output_image_view.letters_source[instance] = source
+        # self.output_image_view.letters_source[instance] = source
 
-    def unselect_letter_image(self):
-        self.selected_letter_to_add = None
+    def unselect_letter(self):
+        self.selected_letter = None
+        self.selected_letter_snake = None
         for letter_image in self.letter_selection_frame.winfo_children():
             letter_image.configure(background='grey')
         self.reset_cursor()
 
-    def select_letter_image(self, image_instance, source, contours):
-        if self.selected_letter_to_add is None or not np.array_equal(self.selected_letter_to_add[0], source):
-            self.unselect_letter_image()
-            self.selected_letter_to_add = (source, contours)
-            image_instance.configure(background='red')
+    def select_letter_image(self, image_instance, contoured_image):
+        if self.selected_letter is None or not np.array_equal(self.selected_letter.original, contoured_image.original):
+            self.unselect_letter()
+            self.selected_letter = contoured_image
+            image_instance.configure(background='white')
         else:
-            self.unselect_letter_image()
+            self.unselect_letter()
 
     def get_bounds(self, coords, image):
         x, y = coords
         height, width = image.shape[:2]
-        height += 20
-        width += 20
+        height += 0
+        width += 0
         top = int(max(y - (height / 2), 0))
-        bottom = int(min(y + (height / 2), self.source_image.shape[0]))
+        bottom = int(min(y + (height / 2), self.source_image.original.shape[0]))
         left = int(max(x - (width / 2), 0))
-        right = int(min(x + (width / 2), self.source_image.shape[1]))
+        right = int(min(x + (width / 2), self.source_image.original.shape[1]))
         return left, top, right, bottom
 
     def left_click_callback(self, event):
@@ -165,7 +171,7 @@ class Application(Frame):
 
         x = int(self.output_image_view.canvasx(event.x))
         y = int(self.output_image_view.canvasy(event.y))
-        if(self.selected_letter_to_add is None):
+        if(self.selected_letter is None):
             # Select a piece from the canvas
             clicked_letter = self.output_image_view.find_withtag(CURRENT)
             if 'letter' in self.output_image_view.gettags(clicked_letter):
@@ -175,11 +181,10 @@ class Application(Frame):
                 self.output_image_view.selected_letter = None
         else:
             # Add letter to canvas
-            self.place_letter(self.get_bounds(
-                (x, y), self.selected_letter_to_add[0]))
+            self.place_letter()
 
             # Clear selected letter to add
-            self.selected_letter_to_add = None
+            self.unselect_letter()
 
     def delete_selected_letter(self, event):
         if(not self.output_image_view.selected_letter is None):
@@ -214,34 +219,43 @@ class Application(Frame):
         self.output_image_view.corsur_image = None
         self.output_image_view.corsur_bounds = None
 
-    def draw_cursor(self, event):
-        if self.selected_letter_to_add is None or self.source_image is None:
+    def draw_snaked_letter(self, event):
+        if self.selected_letter is None or self.source_image is None:
             return
 
         x, y = event.x, event.y
-        height, width = self.selected_letter_to_add[0].shape[:2]
+        height, width = self.selected_letter.original.shape[:2]
         center_y = y - (height / 2)
         center_x = x - (width / 2)
-        if self.debug:
-            self.debug_display(self.get_bounds(
-                (x, y), self.selected_letter_to_add[0]))
+
+        bounds = self.get_bounds(
+            (x, y), self.selected_letter.original)
+        left, top, right, bottom = bounds
+
+        # Update snake image
+        search_bounds = self.source_image.segmented[
+            top:bottom, left:right]
+        mask = self.selected_letter.contours
+        snake = get_snakes(mask, search_bounds)
+        corsur_image = get_viewable_image(
+            snake.original)
+        self.output_image_view.corsur_image = corsur_image
+        self.selected_letter_snake = snake
+
         if self.output_image_view.corsur is None:
-            image = get_viewable_letter_contours_image(
-                self.selected_letter_to_add[0])
-            self.output_image_view.corsur_image = image
             self.output_image_view.corsur = self.output_image_view.create_image(
-                center_x, center_y, image=image, anchor=NW, tags='corsur')
-            left, top, right, bottom = self.get_bounds(
-                (x, y), self.selected_letter_to_add[0])
+                center_x, center_y, image=corsur_image, anchor=NW, tags='corsur')
             self.output_image_view.corsur_bounds = self.output_image_view.create_rectangle(
-                left, top, right, bottom)
+                *bounds)
         else:
+            # Update corsur image and bounds position
             self.output_image_view.coords(
                 self.output_image_view.corsur, center_x, center_y)
-            left, top, right, bottom = self.get_bounds(
-                (x, y), self.selected_letter_to_add[0])
             self.output_image_view.coords(
-                self.output_image_view.corsur_bounds, left, top, right, bottom)
+                self.output_image_view.corsur_bounds, *bounds)
+            # Update corsur image 
+            self.output_image_view.itemconfig(
+                self.output_image_view.corsur, image=corsur_image)
 
     def setup_input_image_canvas(self):
         self.source_image_frame = Frame(
@@ -278,7 +292,7 @@ class Application(Frame):
         self.output_image_view.corsur = None
         self.output_image_view.corsur_image = None
         self.output_image_view.corsur_bounds = None
-        self.output_image_view.bind('<Motion>', self.draw_cursor)
+        self.output_image_view.bind('<Motion>', self.draw_snaked_letter)
 
         # Left Mouse Click
         self.output_image_view.bind("<Button-1>", self.left_click_callback)
@@ -291,65 +305,27 @@ class Application(Frame):
             width=100, height=650, background='grey')
         self.letter_selection_frame.pack(side="left", fill="y")
         self.letter_selection_frame.letters = []
-        self.letter_selection_frame.selected_letter = None
 
-    def modify_image(self, source):
-        # source = cv.cvtColor(source, cv.COLOR_BGR2GRAY)
-        # source = override_with_dominant_color(source)
-        source = segment_image(source)
-        return source
-
-    def debug_display(self, bounds):
-        left, top, right, bottom = bounds
-        search_bounds = self.modified_source_image[
-            top:bottom, left:right]
-        mask = self.selected_letter_to_add[1]
-        result = get_final_letter(mask, search_bounds)
-        blank = np.zeros(
-            (search_bounds.shape[0], search_bounds.shape[1], 4), dtype=np.uint8)
-        cv.drawContours(blank, [result], 0, (0, 0, 255, 255), 3)
-        cv.imshow("DEBUG", blank)
-        # cv.imshow("DEBUG_2", mask)
-
-    def place_letter(self, bounds):
-        # Search only in the given bounds
-        left, top, right, bottom = bounds
-        search_bounds = self.modified_source_image[top:bottom, left:right]
-        # grey_search_bounds = cv.cvtColor(search_bounds, cv.COLOR_BGR2GRAY)
-
-        # B&W is faster and takes less memory space
-        # grey_letter = cv.cvtColor(
-        #     self.selected_letter_to_add, cv.COLOR_BGR2GRAY)
-        w, h = self.selected_letter_to_add[0].shape[:2]
-
-        # Apply template Matching, max_loc holds the best matching point top_left corner
-        res = cv.matchTemplate(
-            search_bounds, self.selected_letter_to_add[0], cv.TM_CCOEFF_NORMED)
-        min_val, max_val, min_loc, max_loc = cv.minMaxLoc(res)
-
-        # fix to full image bounds (absolute position on image)
-        top_left = (top + max_loc[1], left + max_loc[0])
-
-        self.add_letter_image(self.selected_letter_to_add[0], top_left)
-        self.unselect_letter_image()
+    def place_letter(self):
+        if self.selected_letter_snake is not None:
+            snakes_image = self.selected_letter_snake
+            # debug_draw(snakes_image.original, snakes_image.contours)
+            coords = self.output_image_view.coords(self.output_image_view.corsur)
+            self.add_letter_image(snakes_image.original, coords)
 
     def generate_output(self):
         if self.source_image is None:
             return
-        output = self.source_image
+        output = self.source_image.original
 
         # Put all the letters on the source image
         letters = self.output_image_view.find_withtag('letter')
         for letter in letters:
             coords = self.output_image_view.coords(letter)
             top_left = [int(coords[0]), int(coords[1])]
-            letter_source = self.output_image_view.letters_source[letter]
-            output[top_left[1]:(top_left[1] + letter_source.shape[0]),
-                   top_left[0]:(top_left[0] + letter_source.shape[1])] = letter_source
-
-        if self.debug:
-            cv.imshow("DEBUG", output)
-        cv.imwrite('output.tif', output)
+            # letter_source = self.output_image_view.letters_source[letter]
+            # output[top_left[1]:(top_left[1] + letter_source.shape[0]),
+            #        top_left[0]:(top_left[0] + letter_source.shape[1])] = letter_source
 
 
 root = Tk()
